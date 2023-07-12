@@ -43,7 +43,7 @@ where
     pub fn build(stream: S,addr:SocketAddr, e: E, d: D, h: H) -> Self {
         let (in_tx, in_rv) = channel(1024);
         let (out_tx, out_rv) = channel(1024);
-        let (close_tx, close_rv) = channel(1);
+        let (close_tx, close_rv) = channel(128);
         let (r,w)=io::split(stream);
         
         Bootstrap {
