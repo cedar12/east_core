@@ -32,12 +32,12 @@ impl<T> PartialEq for Context<T>{
 impl<T> Clone for Context<T> {
     fn clone(&self) -> Self {
         Context {
-            in_tx:self.in_tx.clone(),
-            out_tx:self.out_tx.clone(),
-            close_tx:self.close_tx.clone(),
-            attributes:self.attributes.clone(),
+            in_tx:Arc::clone(&self.in_tx),
+            out_tx:Arc::clone(&self.out_tx),
+            close_tx:Arc::clone(&self.close_tx),
+            attributes:Arc::clone(&self.attributes),
             addr:self.addr.clone(),
-            is_run:self.is_run.clone(),
+            is_run:Arc::clone(&self.is_run),
         }
     }
 
@@ -99,13 +99,12 @@ impl<T> Context<T> {
         // self.in_tx.lock().await.send(msg).await;
     }
 
-    pub async fn close(&self) {
+    pub async fn close(&self)->Result<(),ContextError> {
         self.is_run.store(false, Ordering::Relaxed);
-        self.close_tx.lock().await.send(()).await.unwrap();
-    }
-    pub async fn close_run(&self) {
-        self.is_run.store(false, Ordering::Relaxed);
-        self.close_tx.lock().await.send(()).await.unwrap();
+        match self.close_tx.lock().await.send(()).await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(ContextError::new(e.to_string()))
+        }
     }
 
     pub fn is_run(&self)->bool{
@@ -128,7 +127,7 @@ impl<T> Context<T> {
         // let attributes = self.attributes.lock().await;
         // let v = attributes.get(key.as_str());
         match self.attributes.read().await.get(key.as_str()){
-            Some(v)=>v.clone(),
+            Some(v)=>Arc::clone(v),
             None=>Arc::new(Mutex::new(Box::new(())))
         }
     }

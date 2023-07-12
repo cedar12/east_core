@@ -4,14 +4,13 @@ use tokio::sync::mpsc::Receiver;
 use crate::byte_buf::ByteBuf;
 
 use crate::handler::{Handler };
-use crate::token_bucket::TokenBucket;
 use crate::{context::Context, decoder::Decoder, encoder::Encoder};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf, self};
 use tokio::sync::{mpsc::channel};
 use std::net::SocketAddr;
 
 
-const READ_SIZE: usize = 1024*10;
+const READ_SIZE: usize = 1024;
 
 pub struct Bootstrap<E, D, H, T,S>
 where
@@ -31,7 +30,6 @@ where
     w:WriteHalf<S>,
     close:Receiver<()>,
     read_size:usize,
-    rate_limit:Option<TokenBucket>,
 }
 
 impl<E, D, H, T,S> Bootstrap<E, D, H, T,S>
@@ -45,7 +43,7 @@ where
     pub fn build(stream: S,addr:SocketAddr, e: E, d: D, h: H) -> Self {
         let (in_tx, in_rv) = channel(1024);
         let (out_tx, out_rv) = channel(1024);
-        let (close_tx, close_rv) = channel(128);
+        let (close_tx, close_rv) = channel(1);
         let (r,w)=io::split(stream);
         
         Bootstrap {
@@ -59,13 +57,7 @@ where
             w:w,
             close:close_rv,
             read_size:READ_SIZE,
-            rate_limit:None
         }
-    }
-
-    pub async fn set_rate_limit(&mut self,rate_limit:u64){
-        let bucket = TokenBucket::new(rate_limit as f64, self.read_size*self.read_size);
-        let _=self.rate_limit.insert(bucket);
     }
 
     pub fn capacity(&mut self,size:usize){
@@ -90,14 +82,19 @@ where
         let ctx = &self.ctx;
 
         handler.active(ctx).await;
-        
-        let limiter=&mut self.rate_limit;
-
+    
         loop {
             tokio::select!{
+                _ = close.recv() => {
+                    w.shutdown().await?;
+                    return Ok(())
+                },
                 msg = out_rv.recv() => {
                     if let Some(msg)=msg{
                         handler.read(ctx,msg).await;
+                    }else{
+                        w.shutdown().await?;
+                        return Ok(())
                     }
                 },
                 msg=in_rv.recv()=>{
@@ -107,11 +104,10 @@ where
                         let mut buf = vec![0u8; byte_buf.readable_bytes()];
                         byte_buf.read_bytes(&mut buf);
                         w.write(&buf).await?;
+                    }else{
+                        w.shutdown().await?;
+                        return Ok(())
                     }
-                },
-                _ = close.recv() => {
-                    w.shutdown().await?;
-                    return Ok(())
                 },
                 n=r.read(&mut buf)=>{
                     
@@ -119,9 +115,6 @@ where
                         Ok(n)=>{
                             if n == 0 {
                                 return Ok(());
-                            }
-                            if let Some(limiter)=limiter.as_ref(){
-                                limiter.take(n).await;
                             }
                             bf.write_bytes(&buf[..n])?;
                             self.decoder.decode(ctx, &mut bf).await;
